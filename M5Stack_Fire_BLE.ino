@@ -8,7 +8,6 @@
 
 
 
-
 class ServerCallbacks: public BLEServerCallbacks {
  public:
     bool* _pConnected;
@@ -44,51 +43,18 @@ std::string toUInt8String(uint8_t v) {
   return std::string(buf, len);  
 };
 
-class InformationCallbacks: public BLECharacteristicCallbacks {
+class InformationCharacteristic : public BLECharacteristic {
 public:
-  std::string _value;
-  InformationCallbacks(std::string value) {
-    _value = value;
+  InformationCharacteristic(BLEUUID uuid, std::string value) : BLECharacteristic(uuid) {
+    this->setReadProperty(true);
+    this->setValue(value);
   }
-  void onRead(BLECharacteristic *pCharacteristic) {
-    pCharacteristic-> setValue(_value);
-  } 
-};
-
-BLECharacteristic* addInformationCharacteristic(BLEService *pService, uint16_t uuid, std::string value) {
-  BLECharacteristic* pCharacteristic = pService->createCharacteristic(
-                      BLEUUID(uuid),
-                      BLECharacteristic::PROPERTY_READ
-                    );
-  pCharacteristic->setCallbacks(new InformationCallbacks(value));  
-  return pCharacteristic;
-};
-
-BLEService* addInformationService(BLEServer* pServer) {
-  BLEService *pService = pServer->createService(BLEUUID((uint16_t)0x180a));
-  
-  uint8_t mac[6];
-  esp_efuse_mac_get_default(mac);
-   
-//  addBinaryInformationCharacteristic(pService, (uint16_t)0x2a23, "System ID");
-  addInformationCharacteristic(pService, (uint16_t)0x2a24, "M5Stack Fire");
-  addInformationCharacteristic(pService, (uint16_t)0x2a25, toMACAddrString(mac));
-  addInformationCharacteristic(pService, (uint16_t)0x2a26, esp_get_idf_version());
-  addInformationCharacteristic(pService, (uint16_t)0x2a27, toUInt8String(ESP.getChipRevision()));
-//  addInformationCharacteristic(pService, (uint16_t)0x2a28, "Software Rev");
-  addInformationCharacteristic(pService, (uint16_t)0x2a29, "M5Stack");
-  return pService;
 };
 
 
 
 
 class SimpleKeysCallbacks: public BLECharacteristicCallbacks {
-public:
-  BLECharacteristic* _pCharacteristic;
-  SimpleKeysCallbacks(BLECharacteristic* pCharacteristic) {
-    _pCharacteristic = pCharacteristic;
-  }
   void onRead(BLECharacteristic *pCharacteristic) {
     uint8_t value = 0x00;
     value |= M5.BtnA.wasReleased() ? 0x01 : 0x00;
@@ -96,80 +62,53 @@ public:
     value |= M5.BtnC.wasReleased() ? 0x04 : 0x00;
     pCharacteristic->setValue(&value, 1);
   }
-  void update(boolean notify) {
-    onRead(_pCharacteristic);
-    uint8_t value = *_pCharacteristic->getData();
-    if (notify) {
-      _pCharacteristic->notify(); 
-    } 
+  void onNotify(BLECharacteristic *pCharacteristic) {
+    onRead(pCharacteristic);
+    uint8_t value = *pCharacteristic->getData();
     if (value != 0x00) {
       String msg = "Button was released";
       M5.Lcd.println(msg);
       Serial.println(msg);
-    }    
+    }   
   }
 };
-  
-SimpleKeysCallbacks *pSimpleKeysCallbacks;
 
-BLEService* addSimpleKeysService(BLEServer* pServer) {
-  BLEService* pService = pServer->createService(BLEUUID((uint16_t)0xffe0));
-
-  BLECharacteristic* pCharacteristic = pService->createCharacteristic(
-                        BLEUUID((uint16_t)0xffe1),
-                        BLECharacteristic::PROPERTY_READ |
-                        BLECharacteristic::PROPERTY_NOTIFY
-                      );
-                      
-  pSimpleKeysCallbacks = new SimpleKeysCallbacks(pCharacteristic); 
-  pCharacteristic->setCallbacks(pSimpleKeysCallbacks);
-
-  return pService;
+class SimpleKeysCharacteristic : public BLECharacteristic {
+public:
+  SimpleKeysCharacteristic(BLECharacteristicCallbacks* pCallbacks) : BLECharacteristic(BLEUUID((uint16_t)0xffe1)) {
+    this->setReadProperty(true);
+    this->setNotifyProperty(true);
+    this->setCallbacks(pCallbacks);
+  }
 };
 
 
 
 
 class BatteryLevelCallbacks: public BLECharacteristicCallbacks {
-public:
-  BLECharacteristic* _pCharacteristic;
-  BatteryLevelCallbacks(BLECharacteristic* pCharacteristic) {
-    _pCharacteristic = pCharacteristic;
-  }
   void onRead(BLECharacteristic *pCharacteristic) {
     uint8_t level = M5.Power.getBatteryLevel();
-    _pCharacteristic->setValue(&level, 1);
+    pCharacteristic->setValue(&level, 1);
   }
-  void update(boolean notify) {
-    onRead(_pCharacteristic);
-    if (notify) {
-      _pCharacteristic->notify();
-    }
+  void onNotify(BLECharacteristic *pCharacteristic) {
+    onRead(pCharacteristic);
   }
 };
 
-BatteryLevelCallbacks *pBatteryLevelCallbacks;
-
-BLEService* addBatteryService(BLEServer* pServer) {
-  BLEService *pService = pServer->createService(BLEUUID((uint16_t)0x180F));
-  
-  BLECharacteristic* pCharacteristic = pService->createCharacteristic(
-                      BLEUUID((uint16_t)0x2a19),
-                      BLECharacteristic::PROPERTY_READ
-                    );
-
-  BLE2904 *pDescriptor = new BLE2904();
-  pDescriptor->setFormat(BLE2904::FORMAT_UINT8);
-  pDescriptor->setNamespace(1);
-  pDescriptor->setUnit(0x27ad);                   
-  pCharacteristic->addDescriptor(pDescriptor);
-
-  pBatteryLevelCallbacks = new BatteryLevelCallbacks(pCharacteristic);
-  pCharacteristic->setCallbacks(pBatteryLevelCallbacks);
-  
-  return pService;
+class BatteryLevelCharacteristic : public BLECharacteristic {
+public:
+  BatteryLevelCharacteristic(BLECharacteristicCallbacks* pCallbacks) : BLECharacteristic(BLEUUID((uint16_t)0x2a19)) {
+    this->setCallbacks(pCallbacks);    
+    this->setReadProperty(true);
+    this->setNotifyProperty(true);
+     
+    BLE2904 *pDescriptor = new BLE2904();
+    pDescriptor->setFormat(BLE2904::FORMAT_UINT8);
+    pDescriptor->setNamespace(1);
+    pDescriptor->setUnit(0x27ad);               
+    this->addDescriptor(pDescriptor);
+  }
 };
-
 
 
 
@@ -184,14 +123,9 @@ Adafruit_NeoPixel Pixels = Adafruit_NeoPixel(
   NEO_GRB + NEO_KHZ800);
 
 class NeoPixelBrightnessCallbacks: public BLECharacteristicCallbacks {
-public:
-  BLECharacteristic* _pCharacteristic;
-  NeoPixelBrightnessCallbacks(BLECharacteristic* pCharacteristic) {
-    _pCharacteristic = pCharacteristic;
-  }
   void onRead(BLECharacteristic *pCharacteristic) {
     uint32_t brightness = Pixels.getBrightness();
-    _pCharacteristic->setValue(brightness);
+    pCharacteristic->setValue(brightness);
   }
   void onWrite(BLECharacteristic *pCharacteristic) {
     const char *value = pCharacteristic->getValue().c_str();
@@ -199,30 +133,30 @@ public:
     Pixels.setBrightness(*pbrightness);     
     Pixels.show();
   }
-  void uodate(boolean notify) {
-    onRead(_pCharacteristic);
-    if (notify) {
-      _pCharacteristic->notify();
-    }    
+  void onNotify(BLECharacteristic *pCharacteristic) {
+    onRead(pCharacteristic);
   }
 };
 
-NeoPixelBrightnessCallbacks* pNeoPixelBrightnessCallbacks;
-
-BLECharacteristic *pCharaNeoPixels[M5STACK_FIRE_NEO_NUM_LEDS];
+class NeoPixelBrightnessCharacteristic : public BLECharacteristic {
+public:
+  NeoPixelBrightnessCharacteristic(BLEUUID uuid, BLECharacteristicCallbacks* pCallbacks) : BLECharacteristic(uuid) {
+    this->setCallbacks(pCallbacks);
+    this->setReadProperty(true);
+    this->setWriteProperty(true);
+  }
+};
 
 class NeoPixelColorCallbacks: public BLECharacteristicCallbacks {
 private:
-  BLECharacteristic* _pCharacteristic;
   int _led;
 public:
-  NeoPixelColorCallbacks(BLECharacteristic* pCharacteristic, int led) {
-    _pCharacteristic = pCharacteristic;
+  NeoPixelColorCallbacks(int led) {
     _led = led;
   }
   void onRead(BLECharacteristic *pCharacteristic) {
-     uint32_t color = Pixels.getPixelColor(_led);
-    _pCharacteristic->setValue(color);
+    uint32_t color = Pixels.getPixelColor(_led);
+    pCharacteristic->setValue(color);
   }
   void onWrite(BLECharacteristic *pCharacteristic) {
     const char *value = pCharacteristic->getValue().c_str();
@@ -230,45 +164,23 @@ public:
     Pixels.setPixelColor(_led, *pcolor);     
     Pixels.show();
   }
-  void update(boolean notify) {
-    onRead(_pCharacteristic);
-    if (notify) {
-      _pCharacteristic->notify();
-    }
+  void onNotify(BLECharacteristic* pCharacteristic) {
+    onRead(pCharacteristic);
   }
 };
 
-NeoPixelColorCallbacks *pNeoPixelColorCallbacks[M5STACK_FIRE_NEO_NUM_LEDS];
+class NeoPixelColorCharacteristic : public BLECharacteristic {
+public:
+  NeoPixelColorCharacteristic(BLEUUID uuid, BLECharacteristicCallbacks* pCallbacks) : BLECharacteristic(uuid) {
+    this->setReadProperty(true);
+    this->setWriteProperty(true);
+    this->setCallbacks(pCallbacks);
+  }
+};
 
 #define neo_pixel  "209b0000-13f8-43d4-a0ed-02b2c44e6fd4"
 #define brightness "209b0001-13f8-43d4-a0ed-02b2c44e6fd4"
 #define led_color  "209b%04x-13f8-43d4-a0ed-02b2c44e6fd4"
-
-BLEService* addNeoPixelService(BLEServer* pServer) {
-  BLEService* pService = pServer->createService(neo_pixel);
-  
-  BLECharacteristic* pCharacteristic = pService->createCharacteristic(
-                        brightness,
-                        BLECharacteristic::PROPERTY_READ   |
-                        BLECharacteristic::PROPERTY_WRITE 
-                        );
-  pNeoPixelBrightnessCallbacks = new NeoPixelBrightnessCallbacks(pCharacteristic); 
-  pCharacteristic->setCallbacks(pNeoPixelBrightnessCallbacks);
-
-  for (int led=0; led<M5STACK_FIRE_NEO_NUM_LEDS; led++) {
-    char uuid[256];
-    sprintf(uuid, led_color, led + 2);
-    pCharaNeoPixels[led] = pService->createCharacteristic(
-                        uuid,
-                        BLECharacteristic::PROPERTY_READ   |
-                        BLECharacteristic::PROPERTY_WRITE 
-                      );
-                      
-    pNeoPixelColorCallbacks[led] = new NeoPixelColorCallbacks(pCharaNeoPixels[led], led);
-    pCharaNeoPixels[led]->setCallbacks(pNeoPixelColorCallbacks[led]);
-  }
-  return pService;
-};
 
 
 
@@ -278,11 +190,6 @@ MPU9250 IMU;
 Madgwick filter;
 
 class MPU9250Callbacks: public BLECharacteristicCallbacks {
-public:
-  BLECharacteristic* _pCharacteristic;
-  MPU9250Callbacks(BLECharacteristic* pCharacteristic) {
-    _pCharacteristic = pCharacteristic;
-  }
   void onRead(BLECharacteristic *pCharacteristic) {
     if (IMU.readByte(MPU9250_ADDRESS, INT_STATUS) & 0x01) {
       IMU.readAccelData(IMU.accelCount);
@@ -342,43 +249,28 @@ public:
       Serial.println("");
     }
   }
-  void update(boolean notify) { 
-      onRead(_pCharacteristic);
-      if (notify) {
-        _pCharacteristic->notify();
-      }
+  void onNotify(BLECharacteristic *pCharacteristic) { 
+      onRead(pCharacteristic);
   }
 };
 
-MPU9250Callbacks *pMPU9250Callbacks;
+class MPU9250Characteristic : public BLECharacteristic {
+public:
+  MPU9250Characteristic(BLEUUID uuid, BLECharacteristicCallbacks* pCallbacks) : BLECharacteristic(uuid) {
+    this->setCallbacks(pCallbacks);
+    this->setReadProperty(true);
+    this->setNotifyProperty(true);
+  }
+};
 
 #define movement_sensor "f000aa80-0451-4000-b000-000000000000"
 #define movement_value  "f000aa81-0451-4000-b000-000000000000"
 
-BLEService* addMPU9250Service(BLEServer* pServer) {
-  BLEService* pService = pServer->createService(movement_sensor);
-  BLECharacteristic* pCharacteristic = pService->createCharacteristic(
-                      movement_value,
-                      BLECharacteristic::PROPERTY_READ |
-                      BLECharacteristic::PROPERTY_NOTIFY
-                    );
-
-  pMPU9250Callbacks = new MPU9250Callbacks(pCharacteristic);
-  pCharacteristic->setCallbacks(pMPU9250Callbacks);
-
-  return pService;
-};
 
 
 
 class IOCallbacks: public BLECharacteristicCallbacks {
-public:
-  BLECharacteristic* _pCharacteristic;
-  IOCallbacks(BLECharacteristic* pCharacteristic) {
-    _pCharacteristic = pCharacteristic;
-  }
   void onRead(BLECharacteristic *pCharacteristic) {
-    
   }
   void onWrite(BLECharacteristic *pCharacteristic) {
     uint8_t value = pCharacteristic->getValue()[0];
@@ -434,33 +326,37 @@ public:
   }
 };
 
+class IOCharacteristic : public BLECharacteristic {
+public:
+  IOCharacteristic(BLEUUID uuid, BLECharacteristicCallbacks* pCallbacks) : BLECharacteristic(uuid) {
+    this->setCallbacks(pCallbacks);
+    this->setReadProperty(true);
+    this->setWriteProperty(true);
+  }
+};
+
+class IOConfigCharacteristic : public BLECharacteristic {
+public:
+  IOConfigCharacteristic(BLEUUID uuid) : BLECharacteristic(uuid) {
+    this->setReadProperty(true);
+    this->setWriteProperty(true);
+
+    uint8_t mode = 0x01;
+    this->setValue(&mode, 1);
+  }
+};
+
 #define io_service "f000aa64-0451-4000-b000-000000000000"
 #define io_data    "f000aa65-0451-4000-b000-000000000000"
 #define io_config  "f000aa66-0451-4000-b000-000000000000"
 
-BLEService* addIOService(BLEServer* pServer) {
-  BLEService* pService = pServer->createService(io_service);
-  
-  BLECharacteristic* pCharacteristic = pService->createCharacteristic(
-                      io_data,
-                      BLECharacteristic::PROPERTY_READ |
-                      BLECharacteristic::PROPERTY_WRITE
-                    );
-  pCharacteristic->setCallbacks(new IOCallbacks(pCharacteristic));
 
-  pCharacteristic = pService->createCharacteristic(
-                      io_config,
-                      BLECharacteristic::PROPERTY_READ |
-                      BLECharacteristic::PROPERTY_WRITE
-                    );
-  pCharacteristic->setCallbacks(new BLECharacteristicCallbacks());
-  uint8_t mode = 0x01;
-  pCharacteristic->setValue(&mode, 1);
-                    
-  return pService;
-};
+
 
 bool deviceConnected = false;
+BatteryLevelCharacteristic* pBatteryLevelCharacteristic;
+SimpleKeysCharacteristic* pSimpleKeysCharacteristic;
+MPU9250Characteristic* pMPU9250Characteristic;
 
 void setup() {
   M5.begin();
@@ -472,25 +368,44 @@ void setup() {
   BLEServer *pServer = BLEDevice::createServer();
   pServer->setCallbacks(new ServerCallbacks(&deviceConnected));
 
-  BLEService *pService = addInformationService(pServer);
+  uint8_t mac[6];
+  esp_efuse_mac_get_default(mac);
+  BLEService *pService = pServer->createService(BLEUUID((uint16_t)0x180a));
+  pService->addCharacteristic(new InformationCharacteristic(BLEUUID((uint16_t)0x2a23), "System ID"));
+  pService->addCharacteristic(new InformationCharacteristic(BLEUUID((uint16_t)0x2a24), "M5Stack Fire"));
+  pService->addCharacteristic(new InformationCharacteristic(BLEUUID((uint16_t)0x2a25), toMACAddrString(mac)));
+  pService->addCharacteristic(new InformationCharacteristic(BLEUUID((uint16_t)0x2a26), esp_get_idf_version()));
+  pService->addCharacteristic(new InformationCharacteristic(BLEUUID((uint16_t)0x2a27), toUInt8String(ESP.getChipRevision())));
+  pService->addCharacteristic(new InformationCharacteristic(BLEUUID((uint16_t)0x2a28), "Software Rev"));
+  pService->addCharacteristic(new InformationCharacteristic(BLEUUID((uint16_t)0x2a29), "M5Stack"));
   pService->start();
   M5.Lcd.println("Information Service start");
   Serial.println("Information Service start");
 
   M5.Power.begin();
-  pService = addBatteryService(pServer);
+  pBatteryLevelCharacteristic = new BatteryLevelCharacteristic(new BatteryLevelCallbacks());
+  pService = pServer->createService(BLEUUID((uint16_t)0x180F));
+  pService->addCharacteristic(pBatteryLevelCharacteristic);
   pService->start();
   M5.Lcd.println("Battery Service start");
   Serial.println("Battery Service start");
 
-  Pixels.begin();
-  Pixels.show();
-  pService = addSimpleKeysService(pServer);
+  pSimpleKeysCharacteristic = new SimpleKeysCharacteristic(new SimpleKeysCallbacks());
+  pService = pServer->createService(BLEUUID((uint16_t)0xffe0));
+  pService->addCharacteristic(pSimpleKeysCharacteristic);
   pService->start();
   M5.Lcd.println("SimpleKeys Service start");
   Serial.println("SimpleKeys Service start");
 
-  pService = addNeoPixelService(pServer);
+  Pixels.begin();
+  Pixels.show();
+  pService = pServer->createService(neo_pixel);
+  pService->addCharacteristic(new NeoPixelBrightnessCharacteristic(BLEUUID(brightness), new NeoPixelBrightnessCallbacks()));
+  for (int led=0; led<M5STACK_FIRE_NEO_NUM_LEDS; led++) {
+    char uuid[256];
+    sprintf(uuid, led_color, led + 2);
+    pService->addCharacteristic(new NeoPixelColorCharacteristic(BLEUUID(uuid), new NeoPixelColorCallbacks(led)));
+  }
   pService->start();
   M5.Lcd.println("NeoPixel Service start");
   Serial.println("NeoPixel Service start");
@@ -499,12 +414,16 @@ void setup() {
   IMU.initMPU9250();
   IMU.initAK8963(IMU.magCalibration);
   filter.begin(1);
-  pService = addMPU9250Service(pServer);
+  pMPU9250Characteristic = new MPU9250Characteristic(BLEUUID(movement_value), new MPU9250Callbacks());
+  pService = pServer->createService(movement_sensor);
+  pService->addCharacteristic(pMPU9250Characteristic);
   pService->start();
   M5.Lcd.println("MPU9250 Service start");
   Serial.println("MPU9250 Service start");
 
-  pService = addIOService(pServer);
+  pService = pServer->createService(io_service);
+  pService->addCharacteristic(new IOCharacteristic(BLEUUID(io_data), new IOCallbacks()));
+  pService->addCharacteristic(new IOConfigCharacteristic(BLEUUID(io_config)));
   pService->start();
   M5.Lcd.println("IO Service start");
   Serial.println("IO Service start");  
@@ -525,10 +444,9 @@ void loop() {
   if (deviceConnected) {
     //Serial.printf("notify %d\n", level);
     
-    pBatteryLevelCallbacks->update(true);
-    pSimpleKeysCallbacks->update(true);
-
-    pMPU9250Callbacks->update(true);
+    pBatteryLevelCharacteristic->notify();
+    pSimpleKeysCharacteristic->notify();
+    pMPU9250Characteristic->notify();
   }
   delay(300);
   M5.update();
