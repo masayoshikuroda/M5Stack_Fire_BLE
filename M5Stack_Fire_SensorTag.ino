@@ -5,7 +5,10 @@
 #include <Adafruit_NeoPixel.h>
 #include "utility/MPU9250.h"
 #include <MadgwickAHRS.h>
-
+#include "DHT12.h"
+#include <Wire.h>
+#include "Adafruit_Sensor.h"
+#include <Adafruit_BMP280.h>
 
 
 
@@ -147,13 +150,74 @@ BLEService* createSimpleKeysService(BLEServer* pServer, BLECharacteristic* pChar
 
 
 
+class DataCharacteristic : public BLECharacteristic {
+public:
+  DataCharacteristic(const char* uuid, BLECharacteristicCallbacks* pCallbacks) : BLECharacteristic(uuid) {
+    this->setCallbacks(pCallbacks);
+    this->setReadProperty(true);
+    this->setNotifyProperty(true);
+  }
+};
+
+class UInt8ConfigCharacteristic : public BLECharacteristic {
+public:
+  UInt8ConfigCharacteristic(const char* uuid, uint8_t value) : BLECharacteristic(uuid) {
+    this->setReadProperty(true);
+    this->setWriteProperty(true);
+    this->setValue(&value, 1);   
+  }
+};
+
+class UInt16ConfigCharacteristic : public BLECharacteristic {
+public:
+  UInt16ConfigCharacteristic(const char* uuid, uint16_t value) : BLECharacteristic(uuid) {
+    this->setReadProperty(true);
+    this->setWriteProperty(true);
+    this->setValue(value);
+  }  
+};
+
+
+
+
+DHT12 dht12;
+
+const char* temperature_sensor = "f000aa00-0451-4000-b000-000000000000";
+const char* temperature_data   = "f000aa01-0451-4000-b000-000000000000";
+const char* temperature_config = "f000aa02-0451-4000-b000-000000000000";
+const char* temperature_period = "f000aa03-0451-4000-b000-000000000000";
+
+class TemperatureCallbacks: public BLECharacteristicCallbacks {
+  void onRead(BLECharacteristic *pCharacteristic) {
+    float tmp = dht12.readTemperature();
+    Serial.print("Temperature[degC]: "); Serial.println(tmp);
+    uint16_t value;
+    value = (int)(tmp / 0.03125) << 2;
+    pCharacteristic->setValue(value);
+  }
+  void onNotify(BLECharacteristic *pCharacteristic) {
+    onRead(pCharacteristic);
+  }
+};
+
+BLEService* createTemperatureService(BLEServer* pServer, BLECharacteristic* pCharacteristic) {
+  BLEService* pService = pServer->createService(temperature_sensor);
+  pService->addCharacteristic(pCharacteristic);
+  pService->addCharacteristic(new UInt8ConfigCharacteristic(temperature_config, 0x01));
+  pService->addCharacteristic(new UInt8ConfigCharacteristic(temperature_period, 0x64));
+  return pService;  
+};
+
+
+
+
 MPU9250 IMU;
 Madgwick filter;
 
-#define movement_sensor "f000aa80-0451-4000-b000-000000000000"
-#define movement_data   "f000aa81-0451-4000-b000-000000000000"
-#define movement_config "f000aa82-0451-4000-b000-000000000000"
-#define movement_period "f000aa83-0451-4000-b000-000000000000"
+const char* movement_sensor = "f000aa80-0451-4000-b000-000000000000";
+const char* movement_data   = "f000aa81-0451-4000-b000-000000000000";
+const char* movement_config = "f000aa82-0451-4000-b000-000000000000";
+const char* movement_period = "f000aa83-0451-4000-b000-000000000000";
 
 class MovementCallbacks: public BLECharacteristicCallbacks {
   void onRead(BLECharacteristic *pCharacteristic) {
@@ -203,6 +267,7 @@ class MovementCallbacks: public BLECharacteristicCallbacks {
       value[8] = (int16_t)(IMU.mz/10*8190/32768);      
       pCharacteristic->setValue((unsigned char*)value, sizeof(value));
 
+      Serial.print("acc-gyro-mag: ");
       Serial.print(IMU.ax); Serial.print(", ");
       Serial.print(IMU.ay); Serial.print(", ");
       Serial.print(IMU.az); Serial.print(", ");
@@ -229,34 +294,87 @@ public:
   }
 };
 
-class MovementConfigCharacteristic : public BLECharacteristic {
-public:
-  MovementConfigCharacteristic() : BLECharacteristic(movement_config) {
-    this->setReadProperty(true);
-    this->setWriteProperty(true);
-    uint16_t value = 0x00FF;
-    this->setValue(value);
-  }  
-};
-
-class MovementPeriodCharacteristic : public BLECharacteristic {
-public:
-  MovementPeriodCharacteristic() : BLECharacteristic(movement_period) {
-    this->setReadProperty(true);
-    this->setWriteProperty(true);
-    uint8_t value = 0x1E;
-    this->setValue(&value, 1);
-  }  
-};
-
 BLEService* createMovementService(BLEServer* pServer, BLECharacteristic* pCharacteristic) {
   BLEService* pService = pServer->createService(movement_sensor);
   pService->addCharacteristic(pCharacteristic);
-  pService->addCharacteristic(new MovementConfigCharacteristic());
-  pService->addCharacteristic(new MovementPeriodCharacteristic());
+  pService->addCharacteristic(new UInt16ConfigCharacteristic(movement_config, 0x00ff));
+  pService->addCharacteristic(new UInt8ConfigCharacteristic(movement_period, 0x1e));
   return pService;
 };
 
+
+
+
+
+const char* humidity_sensor = "f000aa20-0451-4000-b000-000000000000";
+const char* humidity_data   = "f000aa21-0451-4000-b000-000000000000";
+const char* humidity_config = "f000aa22-0451-4000-b000-000000000000";
+const char* humidity_period = "f000aa23-0451-4000-b000-000000000000";
+
+class HumidityCallbacks: public BLECharacteristicCallbacks {
+  void onRead(BLECharacteristic *pCharacteristic) {
+    float tmp = dht12.readTemperature();  
+    float hum = dht12.readHumidity();
+    Serial.printf("Humidity[%%]: %2.0f, Temperature[degC]: %2.1f\r\n", hum, tmp);
+    int16_t value[2];
+    value[0] = (tmp + 40)*65536 /165;
+    value[1] = hum*65536/100;
+    pCharacteristic->setValue((uint8_t*)value, 4);   
+  }
+  void onNotify(BLECharacteristic *pCharacteristic) {
+    onRead(pCharacteristic);
+  }
+};
+
+BLEService* createHumidityService(BLEServer* pServer, BLECharacteristic* pCharacteristic) {
+  BLEService* pService = pServer->createService(humidity_sensor);
+  pService->addCharacteristic(pCharacteristic);
+  pService->addCharacteristic(new UInt8ConfigCharacteristic(humidity_config, 0x01));
+  pService->addCharacteristic(new UInt8ConfigCharacteristic(humidity_period, 0x1e));
+  return pService; 
+}
+
+
+
+
+
+#define barometer_sensor "f000aa40-0451-4000-b000-000000000000"
+#define barometer_data   "f000aa41-0451-4000-b000-000000000000"
+#define barometer_config "f000aa42-0451-4000-b000-000000000000"
+#define barometer_period "f000aa44-0451-4000-b000-000000000000"
+
+Adafruit_BMP280 bme;
+
+class BarometerCallbacks: public BLECharacteristicCallbacks {
+  void onRead(BLECharacteristic *pCharacteristic) {
+    float temp = dht12.readTemperature();
+    float press = bme.readPressure();
+    Serial.printf("Pressure[Pa]: %2.0f, Temperature[degC]: %2.1f\r\n", press, temp);
+    uint32_t tInt = temp*100;
+    uint8_t* t = (uint8_t*)&tInt;
+    uint32_t pInt = press;
+    uint8_t* p = (uint8_t*)&pInt;
+    uint8_t value[6];
+    value[0] = *(t + 0);
+    value[1] = *(t + 1);
+    value[2] = *(t + 2);
+    value[3] = *(p + 0);
+    value[4] = *(p + 1);
+    value[5] = *(p + 2);
+    pCharacteristic->setValue(value, 6);
+  }
+  void onNotify(BLECharacteristic *pCharacteristic) {
+    onRead(pCharacteristic);
+  }
+};
+
+BLEService* createBarometerService(BLEServer* pServer, BLECharacteristic* pCharacteristic) {
+  BLEService* pService = pServer->createService(barometer_sensor);
+//  pService->addCharacteristic(pCharacteristic);
+//  pService->addCharacteristic(new UInt8ConfigCharacteristic(barometer_config, 0x00));
+//  pService->addCharacteristic(new UInt8ConfigCharacteristic(barometer_period, 0x64));
+  return pService;
+};
 
 
 
@@ -276,8 +394,6 @@ Adafruit_NeoPixel Pixels = Adafruit_NeoPixel(
 #define io_config  "f000aa66-0451-4000-b000-000000000000"
 
 class IOCallbacks: public BLECharacteristicCallbacks {
-  void onRead(BLECharacteristic *pCharacteristic) {
-  }
   void onWrite(BLECharacteristic *pCharacteristic) {
     uint8_t value = pCharacteristic->getValue()[0];
     Serial.print(value);
@@ -285,7 +401,7 @@ class IOCallbacks: public BLECharacteristicCallbacks {
     bool red = (value & 0x01) > 0;
     if (red) {
       Pixels.setPixelColor(0, 0x00ff0000);
-      Pixels.setPixelColor(1, 0x00ff0000);
+      Pixels.setPixelColor(1, 0x00ff0000); 
       Pixels.setPixelColor(2, 0x00ff0000);
       Pixels.setPixelColor(3, 0x00ff0000);
       Pixels.setPixelColor(4, 0x00ff0000);  
@@ -338,23 +454,15 @@ public:
     this->setCallbacks(pCallbacks);
     this->setReadProperty(true);
     this->setWriteProperty(true);
-  }
-};
-
-class IOConfigCharacteristic : public BLECharacteristic {
-public:
-  IOConfigCharacteristic() : BLECharacteristic(BLEUUID(io_config)) {
-    this->setReadProperty(true);
-    this->setWriteProperty(true);
-    uint8_t mode = 0x01;
-    this->setValue(&mode, 1);
+    uint8_t value = 0x00;
+    this->setValue(&value, 1);
   }
 };
 
 BLEService* createIOService(BLEServer* pServer) {
-  BLEService* pService = pServer->createService(BLEUUID(io_service));
+  BLEService* pService = pServer->createService(io_service);
   pService->addCharacteristic(new IOCharacteristic(new IOCallbacks()));
-  pService->addCharacteristic(new IOConfigCharacteristic());
+  pService->addCharacteristic(new UInt8ConfigCharacteristic(io_config, 0x01));
   return pService;
 };
 
@@ -362,9 +470,9 @@ BLEService* createIOService(BLEServer* pServer) {
 
 
 
-#define neopixel_service    "209b0000-13f8-43d4-a0ed-02b2c44e6fd4"
-#define neopixel_brightness "209b0001-13f8-43d4-a0ed-02b2c44e6fd4"
-#define neopixel_color      "209b%04x-13f8-43d4-a0ed-02b2c44e6fd4"
+const char* neopixel_service    = "209b0000-13f8-43d4-a0ed-02b2c44e6fd4";
+const char* neopixel_brightness = "209b0001-13f8-43d4-a0ed-02b2c44e6fd4";
+const char* neopixel_color      = "209b%04x-13f8-43d4-a0ed-02b2c44e6fd4";
 
 class NeoPixelBrightnessCallbacks: public BLECharacteristicCallbacks {
   void onRead(BLECharacteristic *pCharacteristic) {
@@ -415,7 +523,7 @@ public:
 
 class NeoPixelColorCharacteristic : public BLECharacteristic {
 public:
-  NeoPixelColorCharacteristic(char* uuid, BLECharacteristicCallbacks* pCallbacks) : BLECharacteristic(BLEUUID(uuid)) {
+  NeoPixelColorCharacteristic(char* uuid, BLECharacteristicCallbacks* pCallbacks) : BLECharacteristic(uuid) {
     this->setReadProperty(true);
     this->setWriteProperty(true);
     this->setCallbacks(pCallbacks);
@@ -423,10 +531,10 @@ public:
 };
 
 BLEService* createNeoPixelService(BLEServer* pServer) {
-  BLEService* pService = pServer->createService(BLEUUID(neopixel_service));
+  BLEService* pService = pServer->createService(neopixel_service);
   pService->addCharacteristic(new NeoPixelBrightnessCharacteristic(new NeoPixelBrightnessCallbacks()));
   for (int led=0; led<M5STACK_FIRE_NEO_NUM_LEDS; led++) {
-    char uuid[256];
+    char uuid[256] = {};
     sprintf(uuid, neopixel_color, led + 2);
     pService->addCharacteristic(new NeoPixelColorCharacteristic(uuid, new NeoPixelColorCallbacks(led)));
   }
@@ -437,13 +545,18 @@ BLEService* createNeoPixelService(BLEServer* pServer) {
 
 
 bool deviceConnected = false;
-BatteryLevelCharacteristic* pBatteryLevelCharacteristic;
-SimpleKeysCharacteristic* pSimpleKeysCharacteristic;
-MovementCharacteristic* pMovementCharacteristic;
+BLECharacteristic* pBatteryLevelCharacteristic = NULL;
+BLECharacteristic* pSimpleKeysCharacteristic   = NULL;
+BLECharacteristic* pTemperatureCharacteristic  = NULL;
+BLECharacteristic* pMovementCharacteristic     = NULL;
+BLECharacteristic* pHumidityCharacteristic     = NULL;
+BLECharacteristic* pBarometerCharacteristic    = NULL;
 
 void setup() {
   M5.begin();
-
+  M5.Power.begin();
+  Wire.begin();
+    
   M5.Lcd.fillScreen(BLACK);
   M5.Lcd.setTextSize(1);
   M5.Lcd.setCursor(0, 0);
@@ -457,7 +570,6 @@ void setup() {
   M5.Lcd.println("Information Service start");
   Serial.println("Information Service start");
 
-  M5.Power.begin();
   pBatteryLevelCharacteristic = new BatteryLevelCharacteristic(new BatteryLevelCallbacks());
   createBatteryService(pServer, pBatteryLevelCharacteristic)->start();
   M5.Lcd.println("Battery Service start");
@@ -467,7 +579,12 @@ void setup() {
   createSimpleKeysService(pServer, pSimpleKeysCharacteristic)->start();
   M5.Lcd.println("SimpleKeys Service start");
   Serial.println("SimpleKeys Service start");
-
+/*
+  pTemperatureCharacteristic = new DataCharacteristic(temperature_data, new TemperatureCallbacks());
+  createTemperatureService(pServer, pTemperatureCharacteristic)->start();
+  M5.Lcd.println("Temperature Service start");
+  Serial.println("Temperature Service start");
+*/
   IMU.calibrateMPU9250(IMU.gyroBias, IMU.accelBias);
   IMU.initMPU9250();
   IMU.initAK8963(IMU.magCalibration);
@@ -476,18 +593,32 @@ void setup() {
   createMovementService(pServer, pMovementCharacteristic)->start();
   M5.Lcd.println("Movement Service start");
   Serial.println("Movement Service start");
+/*
+  pHumidityCharacteristic = new DataCharacteristic(humidity_sensor, new HumidityCallbacks());
+  createHumidityService(pServer, pHumidityCharacteristic)->start();
+  M5.Lcd.println("Humidity Service start");
+  Serial.println("Humidity Service start");
+*/
+
+  while (!bme.begin(0x76)){   
+    Serial.println("Could not find a valid BMP280 sensor, check wiring!");
+    M5.Lcd.println("Could not find a valid BMP280 sensor, check wiring!");
+  }
+  pBarometerCharacteristic = new DataCharacteristic(barometer_data, new BarometerCallbacks());
+  createBarometerService(pServer, pBarometerCharacteristic)->start();
+  M5.Lcd.println("Barometer Service start");
+  Serial.println("Barometer Service start");
 
   Pixels.begin();
   Pixels.show();
   createIOService(pServer)->start();
   M5.Lcd.println("IO Service start");
   Serial.println("IO Service start");  
-
+/*
   createNeoPixelService(pServer)->start();
   M5.Lcd.println("NeoPixel Service start");
   Serial.println("NeoPixel Service start");
-
-  
+*/
   BLEAdvertising *pAdvertising = pServer->getAdvertising();
   pAdvertising->start();
   M5.Lcd.println("Advertising start");
@@ -500,13 +631,23 @@ void setup() {
 void loop() {
   //Serial.println("enter loop");
 
-
+  if (deviceConnected) {
     //Serial.printf("notify %d\n", level);
     
-    pBatteryLevelCharacteristic->notify();
-    pSimpleKeysCharacteristic->notify();
-    pMovementCharacteristic->notify();
+    if (pBatteryLevelCharacteristic != NULL) { pBatteryLevelCharacteristic->notify(); }
+    if (pSimpleKeysCharacteristic   != NULL) { pSimpleKeysCharacteristic->notify();   }
+    if (pTemperatureCharacteristic  != NULL) { pTemperatureCharacteristic->notify();  }
+    if (pMovementCharacteristic     != NULL) { pMovementCharacteristic->notify();     }
+    if (pHumidityCharacteristic     != NULL) { pHumidityCharacteristic->notify();     }
+    if (pBarometerCharacteristic    != NULL) { pBarometerCharacteristic->notify();    }
   }
+
+  if (M5.BtnC.wasPressed()) {
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setCursor(0, 0);
+  }
+  
   delay(300);
   M5.update();
 }
