@@ -1,4 +1,4 @@
-# M5Stack_Fire_BLE
+# M5Stack_Fire_SensorTag
 
 M5Stack Fireの CC2650　エミュレーション.
 スマホのSensorTagアプリからアクセスでき、以下のサービスを提供する
