@@ -5,26 +5,26 @@
 #include <Adafruit_BMP280.h>
 #include "utility/MPU9250.h"
 #include <MadgwickAHRS.h>
+#include <Adafruit_NeoPixel.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLE2904.h>
 
 DHT12 dht12;
+float dht12Temperature;
+float dht12Humidity;
 
-bool DHT12ReadData(float* pTemperature, float* pHumidity) {
-  *pTemperature  = dht12.readTemperature();
-  *pHumidity     = dht12.readHumidity();
-  Serial.printf("Temperatura: %2.2f*C  Humedad: %0.2f%%\r\n", *pTemperature, *pHumidity);
-  M5.Lcd.printf("Temperatura: %2.2f*C  Humedad: %0.2f%%\r\n", *pTemperature, *pHumidity);
+bool DHT12ReadData() {
+  dht12Temperature = dht12.readTemperature();
+  dht12Humidity    = dht12.readHumidity();
   return true;
 };
 
 Adafruit_BMP280 bme;
+float bmePressure;
 
-bool BMP280ReadData(float* pPressure) {
-  *pPressure = bme.readPressure();
-  Serial.printf("Pressure: %0.2fPa\r\n", *pPressure);
-  M5.Lcd.printf("Pressure: %0.2fPa\r\n", *pPressure); 
+bool BMP280ReadData() {
+  bmePressure = bme.readPressure(); 
   return true;
 };
 
@@ -67,19 +67,7 @@ bool MPU9250ReadData() {
   IMU.yaw = filter.getYaw();
 
   IMU.tempCount = IMU.readTempData();
-  IMU.temperature = ((float) IMU.tempCount) / 333.87 + 21.0;
-    
-  Serial.print("acc-gyro-mag: ");
-  Serial.print(IMU.ax); Serial.print(", ");
-  Serial.print(IMU.ay); Serial.print(", ");
-  Serial.print(IMU.az); Serial.print(", ");
-  Serial.print(IMU.gx); Serial.print(", ");
-  Serial.print(IMU.gy); Serial.print(", ");
-  Serial.print(IMU.gz); Serial.print(", ");
-  Serial.print(IMU.mx); Serial.print(", ");
-  Serial.print(IMU.my); Serial.print(", ");
-  Serial.print(IMU.mz); 
-  Serial.println(""); 
+  IMU.temperature = ((float) IMU.tempCount) / 333.87 + 21.0; 
     
   return true;
 };
@@ -95,6 +83,8 @@ class ServerCallbacks: public BLEServerCallbacks {
       *_pConnected = true;
       Serial.println("ServerCallbacks onConnect");
       M5.Lcd.println("ServerCallbacks onConnect");
+      M5.Lcd.fillScreen(BLACK);
+      M5.Lcd.setCursor(0, 0);
     }
     void onDisconnect(BLEServer* pServer) {
       *_pConnected = false;
@@ -161,30 +151,22 @@ BLEService* createBatteryService(BLEServer* pServer, BLECharacteristic* pCharact
   return pService;
 };
 
-class SimpleKeysCallbacks: public BLECharacteristicCallbacks {
-  void onRead(BLECharacteristic *pCharacteristic) {
-    uint8_t value = 0x00;
-    value |= M5.BtnA.wasReleased() ? 0x01 : 0x00;
-    value |= M5.BtnB.wasReleased() ? 0x02 : 0x00;
-    value |= M5.BtnC.wasReleased() ? 0x04 : 0x00;
-    pCharacteristic->setValue(&value, 1);
-  }
-  void onNotify(BLECharacteristic *pCharacteristic) {
-    onRead(pCharacteristic);
-    uint8_t value = *pCharacteristic->getData();
-    if (value != 0x00) {
-      M5.Lcd.println("Button was released");
-      Serial.println("Button was released");
-    }   
-  }
-};
+uint8_t keysState = 0x00;
+
+bool SimpleKeysGetData() {
+  uint8_t value = 0x00;
+  value |= M5.BtnA.wasReleased() ? 0x01 : 0x00;
+  value |= M5.BtnB.wasReleased() ? 0x02 : 0x00;
+  value |= M5.BtnC.wasReleased() ? 0x04 : 0x00;
+  keysState = value;
+  return true;
+}
 
 class SimpleKeysCharacteristic : public BLECharacteristic {
 public:
-  SimpleKeysCharacteristic(BLECharacteristicCallbacks* pCallbacks) : BLECharacteristic(BLEUUID((uint16_t)0xffe1)) {
+  SimpleKeysCharacteristic() : BLECharacteristic(BLEUUID((uint16_t)0xffe1)) {
     this->setReadProperty(true);
     this->setNotifyProperty(true);
-    this->setCallbacks(pCallbacks);
   }
 };
 
@@ -249,7 +231,7 @@ class PeriodCharacteristic : public UInt8ConfigCharacteristic {
 public:
   PeriodCharacteristic(const char* uuid, uint8_t value) : UInt8ConfigCharacteristic(uuid, value) {
   }
-  uint8_t getPeriod() { // 10msec
+  uint8_t getPeriod() { // 1 = 10msec
     return this->getData()[0];
   }
 };
@@ -335,8 +317,61 @@ BLEService* createBarometerService(BLEServer* pServer, BLECharacteristic* pData)
   return createBarometerService(pServer, pData, pPeriod);  
 };
 
-bool isDHT12 = true;
-bool isBME280 = true;
+const char* io_service = "f000aa64-0451-4000-b000-000000000000";
+const char* io_data    = "f000aa65-0451-4000-b000-000000000000";
+const char* io_config  = "f000aa66-0451-4000-b000-000000000000";
+
+#define M5STACK_FIRE_NEO_NUM_LEDS 10
+#define M5STACK_FIRE_NEO_DATA_PIN 15
+
+Adafruit_NeoPixel Pixels = Adafruit_NeoPixel(M5STACK_FIRE_NEO_NUM_LEDS, M5STACK_FIRE_NEO_DATA_PIN, NEO_GRB + NEO_KHZ800);
+
+class IOCallbacks: public BLECharacteristicCallbacks {
+  void onRead(BLECharacteristic *pCharacteristic) {
+  }
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    uint8_t value = pCharacteristic->getValue()[0];
+     Serial.print("IO Value: ");
+     Serial.println(value);
+     {
+       bool red = (value & 0x01) > 0;
+       uint32_t color = red ? 0x00ff0000 : 0x00000000;
+       for (int i=0; i<5;i++) { Pixels.setPixelColor(i, color); }
+     }
+     {
+       bool green = (value & 0x02) > 0;
+       uint32_t color = green ? 0x0000ff00 : 0x00000000;
+       for (int i=0; i<10;i++) { Pixels.setPixelColor(i, color); }
+     }
+     bool buzzer = (value & 0x04) > 0;
+     if (buzzer) {
+       M5.Speaker.tone(440);
+     } else {
+       M5.Speaker.end();
+     }
+  }
+};
+
+class IOCharacteristic : public BLECharacteristic {
+public:
+  IOCharacteristic(BLECharacteristicCallbacks* pCallbacks) : BLECharacteristic(io_data) {
+    this->setCallbacks(pCallbacks);
+    this->setReadProperty(true);
+    this->setWriteProperty(true);
+    uint8_t mode = 0x01;
+    this->setValue(&mode, 1);
+  }
+};
+
+BLEService* createIOService(BLEServer* pServer) {
+   BLEService* pService = pServer->createService(BLEUUID(io_service));
+   pService->addCharacteristic(new IOCharacteristic(new IOCallbacks()));
+   pService->addCharacteristic(new UInt8ConfigCharacteristic(io_config, 0x00));
+   return pService;
+ };
+ 
+bool isDHT12 = false;
+bool isBME280 = false;
 bool isMPU9250 = true;
 
 bool deviceConnected = false;
@@ -357,7 +392,7 @@ void setup() {
   Wire.begin();
   
   M5.Lcd.fillScreen(BLACK);
-  M5.Lcd.setTextSize(1);
+  M5.Lcd.setTextSize(2);
   M5.Lcd.setCursor(0, 0);
   
   M5.Lcd.println("enter setup");
@@ -386,17 +421,16 @@ void setup() {
   Serial.println("Information Service start");
 
   pBatteryLevelCharacteristic = new BatteryLevelCharacteristic();
-  
   createBatteryService(pServer, pBatteryLevelCharacteristic)->start();
   M5.Lcd.println("Battery Service start");
   Serial.println("Battery Service start");
 
-  pSimpleKeysCharacteristic = new SimpleKeysCharacteristic(new SimpleKeysCallbacks());
+  pSimpleKeysCharacteristic = new SimpleKeysCharacteristic();
   createSimpleKeysService(pServer, pSimpleKeysCharacteristic)->start();
   M5.Lcd.println("SimpleKeys Service start");
   Serial.println("SimpleKeys Service start");
   
-  if (isDHT12 && false) {
+  if (isDHT12) {
     pTemperatureData = new SensorCharacteristic(temperature_data);
     pTemperaturePeriod = new PeriodCharacteristic(temperature_period, 0x64);
     createTemperatureService(pServer, pTemperatureData, pTemperaturePeriod)->start();
@@ -421,15 +455,20 @@ void setup() {
   }
 
   if (isBME280) {
-    while (!bme.begin(0x76)){   
-      Serial.println("Could not find a valid BMP280 sensor, check wiring!");
-      M5.Lcd.println("Could not find a valid BMP280 sensor, check wiring!");
-    }
     pBarometerData = new SensorCharacteristic(barometer_data);
     pBarometerPeriod = new PeriodCharacteristic(barometer_period, 0x64);
     createBarometerService(pServer, pBarometerData, pBarometerPeriod)->start();
     M5.Lcd.println("Barometer Service start");
     Serial.println("Barometer Service start");
+  }
+
+  if (true) {
+    Pixels.begin();
+    Pixels.show();
+    M5.Speaker.begin();
+    createIOService(pServer)->start();
+    M5.Lcd.println("IO Service start");
+    Serial.println("IO Service start"); 
   }
   
   BLEAdvertising *pAdvertising = pServer->getAdvertising();
@@ -442,37 +481,53 @@ void setup() {
 }
 
 void loop() {
-  uint8_t battery;
-  float temperature = 0;
-  float humidity = 0;
-  float pressure = 0;
+  M5.Lcd.setCursor(0, 0);
 
-  battery = M5.Power.getBatteryLevel();
+  uint8_t battery = M5.Power.getBatteryLevel();
   pBatteryLevelCharacteristic->setValue(&battery, 1);
-    
+  
+  uint8_t prevState = keysState;
+  SimpleKeysGetData();
+  if (keysState != prevState) {
+    pSimpleKeysCharacteristic->setValue(&keysState, 1);
+    pSimpleKeysCharacteristic->notify();
+    if (keysState != 0x00) {
+      String msg = "Button was released";
+      M5.Lcd.println(msg);
+      Serial.println(msg);
+    } 
+  }
+  
   if (isDHT12) {
-    DHT12ReadData(&temperature, &humidity);
-        
+    DHT12ReadData();
+    Serial.printf("Temperature[degC]: %2.2f\r\n", dht12Temperature);
+    M5.Lcd.printf("Temperature[degC]: %2.2f\r\n", dht12Temperature);
+    Serial.printf("Humidity[%%]:      %0.2f\r\n", dht12Humidity);
+    M5.Lcd.printf("Humidity[%%]:      %0.2f\r\n", dht12Humidity);
+          
     if ((pTemperatureData != NULL) && (pTemperatureData->elapsed(pTemperaturePeriod->getPeriod()*10) > 0)) {
-      uint16_t value = (int)(temperature / 0.03125) << 2;
+      uint16_t value = (int)(dht12Temperature / 0.03125) << 2;
       pTemperatureData->setValue(value);
       pTemperatureData->notify(value);
     }
     if ((pHumidityData != NULL) && (pHumidityData->elapsed(pHumidityPeriod->getPeriod()*10) > 0)) {
       int16_t value[2];
-      value[0] = (temperature + 40)*65536 /165;
-      value[1] = humidity*65536/100;
+      value[0] = (dht12Temperature + 40)*65536 /165;
+      value[1] = dht12Humidity*65536/100;
       pHumidityData->setValue((uint8_t*)value, 4);
       pHumidityData->notify();
     }
   }
 
   if (isBME280) {
-    BMP280ReadData(&pressure);   
+    BMP280ReadData();
+    Serial.printf("Pressure[Pa]: %0.2f\r\n", bmePressure);
+    M5.Lcd.printf("Pressure[Pa]: %0.2f\r\n", bmePressure);
+     
     if ((pBarometerData != NULL) && (pBarometerData->elapsed(pBarometerPeriod->getPeriod()*10) > 0)) {
-      uint32_t tInt = temperature*100;
+      uint32_t tInt = dht12Temperature*100;
       uint8_t* t = (uint8_t*)&tInt;
-      uint32_t pInt = pressure;
+      uint32_t pInt = bmePressure;
       uint8_t* p = (uint8_t*)&pInt;
       uint8_t value[6];
       value[0] = *(t + 0);
@@ -487,6 +542,17 @@ void loop() {
   }
   if (isMPU9250) {
     MPU9250ReadData();
+    Serial.printf("A: %5.1f  %5.1f  %5.1f\r\n", IMU.ax,IMU.ay,IMU.az); // [g]
+    M5.Lcd.printf("A: %5.1f  %5.1f  %5.1f\r\n", IMU.ax,IMU.ay,IMU.az);
+    Serial.printf("G: %5.1f  %5.1f  %5.1f\r\n", IMU.gx,IMU.gy,IMU.gz); // [o/s]
+    M5.Lcd.printf("G: %5.1f  %5.1f  %5.1f\r\n", IMU.gx,IMU.gy,IMU.gz);
+    Serial.printf("M: %5.1f  %5.1f  %5.1f\r\n", IMU.mx/1000,IMU.my/1000,IMU.mz/1000);
+    M5.Lcd.printf("M: %5.1f  %5.1f  %5.1f\r\n", IMU.mx/1000,IMU.my/1000,IMU.mz/1000);
+    Serial.printf("R: %5.1f  %5.1f  %5.1f\r\n", IMU.roll,IMU.pitch,IMU.yaw);
+    M5.Lcd.printf("R: %5.1f  %5.1f  %5.1f\r\n", IMU.roll,IMU.pitch,IMU.yaw); // [G]
+    Serial.printf("Temp[degC]: %2.2f\r\n", IMU.temperature);
+    M5.Lcd.printf("Temp[degC]: %2.2f\r\n", IMU.temperature);
+          
     if ((pMovementData != NULL) && (pMovementData->elapsed(pMovementPeriod->getPeriod()*10) > 0)) {
       int16_t value[9];
       value[0] = (int16_t)(IMU.gx*65536/500);
@@ -505,10 +571,10 @@ void loop() {
   
   if (M5.BtnC.wasPressed()) {
     M5.Lcd.fillScreen(BLACK);
-    M5.Lcd.setTextSize(1);
+    M5.Lcd.setTextSize(2);
     M5.Lcd.setCursor(0, 0);
   }
   
-  delay(10);
+  delay(100);
   M5.update();
 }
